@@ -218,10 +218,346 @@ Toutes les commandes entrées apparaissent sur le premier terminal.
 ### 4.1 Compte Azure for Students
 
 **Pourquoi Azure for Students ?** Grâce à l'offre étudiante d'Azure, nous pouvons bénéficier d'un crédit de 100$ et d'une grande variété de service gratuit.
-1. Crée le compte sur [azure.microsoft.com/free/students](https://azure.microsoft.com/free/students) (et pas sur la page d'essai générale) avec ton adresse e-mail d'étudiant : aucune carte bancaire n'est demandée.
+1. Créer le compte sur [azure.microsoft.com/free/students](https://azure.microsoft.com/free/students) (et pas sur la page d'essai générale) avec une adresse e-mail d'étudiant : aucune carte bancaire n'est demandée.
+
+2. Dans le portail, taper **Education** dans la barre de recherche puis aller dans **Vue d'ensemble** pour voir les détails de l'offre étudiant et pour vérifier que le crédit de 100$ (ou environ) nous a bien été attribué. Sinon, il faudra attendre quelques jours.
+Sachant que la machine virtuelle prend sur notre crédit (voir 4.2), nous pouvons créer une alerte de budget pour pouvoir mieux gérer notre crédit et ne pas tout attribuer à **une seule** machine virtuelle.
+Tout ceci est adapté à l'abonnement et l'établissement car les régions de déploiement sont limitées. Dans mon cas, avec l'abonnement Azure for Students et du fait que je suis scolarisé à l'ESAIP, ma machine virtuelle se situe en Espagne et certaines tailles de machines virtuelles ne sont disponibles que dans certaines régions.
+
+### 4.2 Créer la machine virtuelle
+
+Portail Azure > **Machines virtuelles** > **Créer** > **Machine virtuelle 
+
+| Champ | Valeur |
+|---|---|
+| Groupe de ressources | `CowrieHoneypot_group` (nouveau) |
+| Nom | `honeypot-cowrie` |
+| Région | une région **autorisée par la politique de l'abonnement** (dans le cas de l'abonnement étudiant choisir **Spain Central**(voir 4.9) |
+| Image | Ubuntu Server 24.04 LTS, x64 Gen2 |
+| Taille | `Standard_B2ts_v2` (environ 0,012 $/h) |
+| Authentification | Clé publique SSH, nouvelle paire de clés |
+| Nom d'utilisateur | `azureuser` |
+| Ports entrants | SSH (22) |
+| Disque | SSD standard, cocher « Supprimer avec la machine virtuelle » |
+| Adresse IP publique | Nouvelle, **statique**, supprimée avec la VM |
+
+Vous pouvez ensuite passer toutes les autres options.  
+
+Au moment de créer, cliquer sur **Télécharger la clé privée et créer la ressource**. Sans ce fichier `.pem`, vous ne pourrez **jamais** vous connecter.
+
+### 4.3 Se connecter en SSH
+Copiez la clé dans `.ssh` (PowerShell)  
+```powershell
+Copy-Item "$HOME\Downloads\<NOM_DE_LA_CLE>.pem" "$HOME\.ssh\<NOM_DE_LA_CLE>.pem"
+``
+Vous pouvez également le faire depuis l'explorateur de fichiers.
+
+Pour vous connecter : 
+```powershell
+ssh -i $HOME\.ssh\<NOM_DE_LA_CLE>.pem azureuser@<IP_PUBLIQUE>
+```
+Remplacez par l'IP publique de votre machine virtuelle sur Azure ainsi que le chemin où se trouve votre clé.  
+
+### 4.4 Déplacer le vrai SSH sur le port 22222
+
+Par défaut, Cowrie prend le port 22 car c'est celui que les bots scannent en priorité. Nous devons donc déplacer le vrai SSH d'administration va donc sur le 22222.  
+Il faut cependant suivre un **ordre** : on ajoute le nouveau port, on teste, puis seulement on retire l'ancien.  
 
 
-**EN CONSTRUCTION**
+Sur Ubuntu 24.04, SSH est lancé par un socket systemd, et la ligne `Port` de `sshd_config` est ignorée. On vérifie donc :
 
+```bash
+systemctl is-active ssh.socket
+```
 
-**CREATING**
+Si la réponse est `active`, créez un fichier de surcharge qui écoute sur les deux ports, en IPv4 **et** en IPv6 :
+
+```bash
+sudo mkdir -p /etc/systemd/system/ssh.socket.d
+```
+ 
+```bash
+printf '[Socket]\nListenStream=\nListenStream=0.0.0.0:22\nListenStream=[::]:22\nListenStream=0.0.0.0:22222\nListenStream=[::]:22222\n' | sudo tee /etc/systemd/system/ssh.socket.d/override.conf
+```
+ 
+```bash
+sudo systemctl daemon-reload
+```
+ 
+```bash
+sudo systemctl restart ssh.socket
+```
+ 
+```bash
+sudo ss -tlnp | grep -E ':22\b|:22222'
+```
+
+Lors de l'exécution de la dernière commande, si vous voyez `0.0.0.0:22` et `0.0.0.0:22222`, alors jusque là tout se passe parfaitement.  
+
+On ouvre ensuite le port 22222 dans les paramètres réseau de la machine virtuelle directement sur le portail Azure (**Mise en réseau > Paramètres réseau > Ajouter une règle de port d'entrée**) :
+
+| Champ | Valeur |
+|---|---|
+| Source | Adresses IP : **ton IP publique** (`Invoke-RestMethod https://api.ipify.org`) |
+| Plage de ports de destination | `22222` |
+| Protocole | TCP |
+| Action | Autoriser |
+| Priorité | un nombre libre (par exemple 1010) |
+| Nom | `ssh-admin-22222` |
+
+On ouvre un duexième terminal PowerShell pour tester la connexion sur le nouveau port : 
+
+```powershell
+ssh -p 22222 -i $HOME\.ssh\<NOM_DE_LA_CLE>.pem azureuser@<IP_PUBLIQUE>
+```
+
+Toujours en remplaçant par la bonne adresse IP et le bon chemin de fichier.  
+
+Une fois la connexion confirmée, on retire le port 22 du vrai SSH :
+ 
+```bash
+printf '[Socket]\nListenStream=\nListenStream=0.0.0.0:22222\nListenStream=[::]:22222\n' | sudo tee /etc/systemd/system/ssh.socket.d/override.conf
+```
+ 
+```bash
+sudo systemctl daemon-reload
+```
+ 
+```bash
+sudo systemctl restart ssh.socket
+```
+
+Seul le 22222 doit rester à l'écoute. Désormais, il faudra **toujours** se connecter avec `-p 22222`
+
+### 4.5 Préparer la machine virtuelle
+
+Cette machine virtuelle n'a que 1 Go de RAM : il va falloir créer un fichier d'échange pour éviter que pip ne soit tué par manque de mémoire pendant l'installation : 
+
+```bash
+sudo fallocate -l 2G /swapfile
+```
+ 
+```bash
+sudo chmod 600 /swapfile
+```
+ 
+```bash
+sudo mkswap /swapfile
+```
+ 
+```bash
+sudo swapon /swapfile
+```
+ 
+```bash
+echo '/swapfile none swap sw 0 0' | sudo tee -a /etc/fstab
+```
+ 
+Une fois ceci fait, on installe les mises à jour et dépendances :
+ 
+```bash
+sudo apt-get update
+```
+ 
+```bash
+sudo apt-get upgrade -y
+```
+ 
+```bash
+sudo apt-get install -y python3-pip python3-venv libssl-dev libffi-dev build-essential libpython3-dev python3-minimal authbind
+```
+ 
+Puis on crée un utilisateur dédié car Cowrie **refuse** de démarrer en root :
+ 
+```bash
+sudo adduser --disabled-password --gecos "" cowrie
+```
+ 
+```bash
+sudo su - cowrie
+```
+
+## 4.6 Installer Cowrie
+
+La documentation actuelle de Cowrie installe le paquet avec `pip`, puis crée le dossier de configuration avec `cowrie init`. Ces commandes se lancent avec l'utilisateur `cowrie` :  
+
+On crée tour d'abord un dossier `honeypot` dans lequel on va installer cowrie
+
+```bash
+mkdir ~/honeypot && cd ~/honeypot
+```
+
+ Puis on crée l'environnement virtuel python pour pouvoir exécuter cowrie :
+ 
+```bash
+python3 -m venv cowrie-env
+```
+ On active cet environnement virtuel :
+ 
+```bash
+source cowrie-env/bin/activate
+```
+ 
+```bash
+python -m pip install --upgrade pip
+```
+Puis on installe cowrie :
+
+```bash
+python -m pip install cowrie
+```
+
+Et on crée le dossier de configuration :
+ 
+```bash
+cowrie init
+```
+On démarre cowrie :
+
+```bash
+cowrie start
+```
+ 
+Et on vérifie :
+ 
+```bash
+tail -n 20 var/log/cowrie/cowrie.log
+```
+ 
+```bash
+ss -tlnp | grep 2222
+```
+ 
+On ouvre un autre terminal pour tester la connexion :
+ 
+```bash
+ssh -p 2222 root@127.0.0.1
+```
+ 
+### 4.7 Exposer Cowrie sur le port 22
+ 
+Avec `authbind`, un utilisateur normal peut écouter sur un port inférieur à 1024. Depuis l'utilisateur azureuser :
+ 
+```bash
+sudo touch /etc/authbind/byport/22
+```
+ 
+```bash
+sudo chown cowrie:cowrie /etc/authbind/byport/22
+```
+ 
+```bash
+sudo chmod 770 /etc/authbind/byport/22
+```
+ 
+Avec l'utilisateur `cowrie`, on arrête Cowrie :
+
+```bash
+cowrie stop
+```
+
+Puis on édite `~/honeypot/etc/cowrie.cfg`. il faut chercher si une ligne `listen_endpoints` existe déjà sous la section `[ssh]` : si oui, changer sa valeur ; sinon, ajouter la section **une seule fois** (deux sections `[ssh]` provoquent une erreur) :
+
+ 
+```ini
+[ssh]
+listen_endpoints = tcp:22:interface=0.0.0.0
+```
+ 
+```bash
+AUTHBIND_ENABLED=yes cowrie start
+```
+ 
+```bash
+ss -tlnp | grep ':22 '
+```
+ 
+Dans le groupe de sécurité réseau Azure, la règle du port 22 doit avoir comme source **Any** : c'est maintenant le seul port ouvert à tout Internet, et il n'est servi que par le honeypot.
+ 
+Depuis Windows, le PC avait enregistré l'empreinte du vrai SSH pour cette IP. Supprimez-la, puis testez :
+ 
+```powershell
+ssh-keygen -R <IP_PUBLIQUE>
+```
+ 
+```powershell
+ssh root@<IP_PUBLIQUE>
+```
+(Remplacer IP_PUBLIQUE par votre IP publique.)
+
+### 4.8 Lancement automatique avec systemd
+ 
+Sans service, un redémarrage de la VM arrête Cowrie sans prévenir. Arrêtez l'instance lancée à la main (`cowrie stop` avec l'utilisateur `cowrie`, puis `exit`), et créez le service depuis l'utilisateur azureuser. La commande `printf` écrase le fichier en entier, ce qui évite les doublons de contenu :
+ 
+```bash
+printf '[Unit]\nDescription=Cowrie SSH/Telnet honeypot\nAfter=network.target\n\n[Service]\nType=forking\nUser=cowrie\nGroup=cowrie\nWorkingDirectory=/home/cowrie/honeypot\nEnvironment=PATH=/home/cowrie/honeypot/cowrie-env/bin:/usr/local/bin:/usr/bin:/bin\nExecStart=/home/cowrie/honeypot/cowrie-env/bin/cowrie start\nExecStop=/home/cowrie/honeypot/cowrie-env/bin/cowrie stop\nPIDFile=/home/cowrie/honeypot/var/run/cowrie.pid\nAmbientCapabilities=CAP_NET_BIND_SERVICE\nRestart=on-failure\nRestartSec=5\n\n[Install]\nWantedBy=multi-user.target\n' | sudo tee /etc/systemd/system/cowrie.service
+```
+ 
+Le fichier obtenu :
+ 
+```ini
+[Unit]
+Description=Cowrie SSH/Telnet honeypot
+After=network.target
+ 
+[Service]
+Type=forking
+User=cowrie
+Group=cowrie
+WorkingDirectory=/home/cowrie/honeypot
+Environment=PATH=/home/cowrie/honeypot/cowrie-env/bin:/usr/local/bin:/usr/bin:/bin
+ExecStart=/home/cowrie/honeypot/cowrie-env/bin/cowrie start
+ExecStop=/home/cowrie/honeypot/cowrie-env/bin/cowrie stop
+PIDFile=/home/cowrie/honeypot/var/run/cowrie.pid
+AmbientCapabilities=CAP_NET_BIND_SERVICE
+Restart=on-failure
+RestartSec=5
+ 
+[Install]
+WantedBy=multi-user.target
+```
+ 
+On vérifie le système, on active puis on démarre :
+ 
+```bash
+sudo systemd-analyze verify /etc/systemd/system/cowrie.service
+```
+ 
+```bash
+sudo systemctl daemon-reload
+```
+ 
+```bash
+sudo systemctl enable --now cowrie
+```
+ 
+```bash
+systemctl status cowrie --no-pager
+```
+ 
+```bash
+sudo ss -tlnp | grep ':22 '
+```
+ 
+Pour valider le démarrage automatique, redémarrez la VM (`sudo reboot`), reconnectez-vous sur le port 22222, et vérifiez que Cowrie est revenu seul.
+
+ ## 5. Coûts
+ - Machine virtuelle Azure `Standard_B2ts_v2` : environ 0,012$/h, soit environ 9$ par mois en continu, payés grâce au crédit étudiant. Cependant, pour économiser des coûts supplémentaires, on éteint la machine virtuelle dès qu'on ne l'utilise plus.
+ - Machine virtuelle locale : Gratuite grâce à VirtualBox et Kali Linux.
+
+## 6. Ce que j'ai appris
+
+- Qu'est-ce qu'un **"honeypot"**, comment l'installer et comment l'administrer.
+- Pourquoi séparer le SSH d'administration du honeypot et comment le faire.
+- Rappel des commandes Linux fondamentales et apprentissage de nouvelles commandes.
+- Diagnostiquer ses erreurs, se documenter, demander de l'aide pour les réparer et apprendre de ces erreurs.
+
+## 7. Références
+ 
+- [Cowrie, dépôt officiel](https://github.com/cowrie/cowrie)
+- [Documentation de Cowrie : installation](https://docs.cowrie.org/en/latest/INSTALL.html)
+- [Azure for Students](https://azure.microsoft.com/free/students)
+- [Kali Linux](https://www.kali.org/)
+
+## 8. Suite du projet au Mini SIEM !
+
