@@ -574,7 +574,12 @@ Vous arrivez sur un faux shell :
 - [Azure for Students](https://azure.microsoft.com/free/students)
 - [Kali Linux](https://www.kali.org/)
 
-## 7. Suite du projet au Mini SIEM !  
+# 7. Licence
+Ce projet est réalisé à but éducatif et est sous licence MIT - voir le fichier LICENSE pour plus de détails. 
+
+## 8. Suite du projet au Mini SIEM !  
 
 # EN  
 
+# 7. Licence
+This project is for educational purposes and is licensed under the MIT License - see the LICENSE file for more details.
